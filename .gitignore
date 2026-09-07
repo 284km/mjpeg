@@ -1,0 +1,7 @@
+*.c
+*.ll
+*.wat
+*.wasm
+mere.lock
+*.ppm
+mjpeg

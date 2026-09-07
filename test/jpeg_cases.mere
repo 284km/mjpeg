@@ -1,0 +1,11 @@
+// One header per line, in the canonical form `gen_jpeg_expected.py` writes.
+import "../jpeg.mere";
+
+let path = match args () with Cons (p, _) -> p | Nil -> "";
+let rec go = fn (ls: str list) ->
+  match ls with
+  | Nil -> 0
+  | Cons (l, rest) ->
+    if l == "" then go rest
+    else let _ = print (Jpeg.render_head (Jpeg.load ("test/data/" ++ l))) in go rest;
+go (read_lines path)

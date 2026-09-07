@@ -1,0 +1,6 @@
+[package]
+name = "mjpeg"
+version = "0.1.0"
+path = "github.com/284km/mjpeg"
+
+[dependencies]

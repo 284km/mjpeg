@@ -1,0 +1,48 @@
+// mjpeg.mere — the CLI, so the decoder can be pointed at a file from a shell.
+//
+//   mjpeg info <file.jpg>            what the header says
+//   mjpeg ppm  <file.jpg> <out.ppm>  the decoded pixels, as a P6 PPM
+//
+// `jpeg.mere` is the module and holds no program, the same split mpng uses: a
+// package's consumers import the module and never the CLI.
+import "./jpeg.mere";
+
+let argv = args ();
+
+let usage = "usage: mjpeg info <file.jpg>  |  mjpeg ppm <file.jpg> <out.ppm>";
+
+// `args ()` begins at the FIRST ARGUMENT, not at the program name.
+let _ =
+  match argv with
+  | Cons (cmd, Cons (path, rest)) ->
+    if cmd == "info" then print (Jpeg.render_head (Jpeg.load path))
+    else if cmd == "ppm" then
+      let out = match rest with | Cons (o, _) -> o | Nil -> "" in
+      if out == "" then print usage
+      else
+        let d = Jpeg.load_bytes path in
+        let h = Jpeg.checked d in
+        let (v, _nz) = Jpeg.pixels h d in
+        // P6: a byte a channel, so the packed r<<16|g<<8|b comes apart here. The
+        // header is ASCII and the pixels are raw, so both go into ONE buffer and out
+        // in one write -- there is no append, and a PPM written in two calls would be
+        // a header followed by nothing.
+        let hdr = "P6\n" ++ str_of_int h.w ++ " " ++ str_of_int h.h ++ "\n255\n" in
+        let bb = bytebuf_new 0 in
+        let rec hb = fn (i: int) ->
+          if i >= str_len hdr then ()
+          else let _ = bytebuf_push bb (ord (char_at hdr i)) in hb (i + 1) in
+        let _ = hb 0 in
+        let rec go = fn (i: int) ->
+          if i >= h.w * h.h then ()
+          else
+            let c = vec_get v i in
+            let _ = bytebuf_push bb (c / 65536) in
+            let _ = bytebuf_push bb ((c / 256) - (c / 65536) * 256) in
+            let _ = bytebuf_push bb (c - (c / 256) * 256) in
+            go (i + 1) in
+        let _ = go 0 in
+        let _ = write_bytes out (bytes_of_bytebuf bb) in
+        print ("wrote " ++ out)
+    else print usage
+  | _ -> print usage;

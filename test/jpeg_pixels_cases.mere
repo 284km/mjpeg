@@ -1,0 +1,22 @@
+// Every pixel of every named file, as run-length rows, with a header line naming the file and the
+// number of non-zero AC coefficients the scan contained.
+import "../jpeg.mere";
+
+let path = match args () with Cons (p, _) -> p | Nil -> "";
+let rec go = fn (ls: str list) ->
+  match ls with
+  | Nil -> 0
+  | Cons (l, rest) ->
+    if l == "" then go rest
+    else
+      // `name` or `name expected-ac-count`; only the name is a path.
+      let f = "test/data/" ++ (match str_split l " " with Cons (n, _) -> n | Nil -> l) in
+      let d = Jpeg.load_bytes f in
+      let h = Jpeg.header d in
+      let (v, nz) = Jpeg.pixels h d in
+      let _ = print ("--- " ++ (match str_split l " " with Cons (n, _) -> n | Nil -> l)
+                     ++ " " ++ str_of_int h.w ++ " " ++ str_of_int h.h
+                     ++ " ac=" ++ str_of_int nz) in
+      let _ = print (Jpeg.render_pixels v h.w h.h) in
+      go rest;
+go (read_lines path)
