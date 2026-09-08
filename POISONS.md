@@ -59,3 +59,33 @@ frame is found, and the *other* guard answers `no frame header was found`. The g
 been testing for a `jpeg:` prefix, so it passed — with the specific refusal gone, which is
 the whole thing the specific refusal exists for. Each case now checks its own words. **A
 gate that accepts any refusal cannot tell a precise one from a vague one.**
+
+## Progressive (2026-09-08)
+
+Four, each reverted, on the corpus as it stands:
+
+| poison | what fails |
+|---|---|
+| a redefined Huffman table no longer shadows the earlier one | 5 |
+| a non-interleaved scan walked over the MCU grid | 2 (`progodd` among them) |
+| the end-of-band run swallowed (`EOBRUN = 0`) | 2 |
+| the end-of-band run off by one (`1 << r` for `(1 << r) - 1`) | 6 |
+
+**Two of these did not bite at first, and the corpus is what changed.**
+
+Walking a non-interleaved scan over the MCU grid passed everything, because at 64×48
+with 4:2:0 a component's own block count and `mcux * hs` happen to be equal. `progodd`
+is 37×29, where they are not, and it is the only file that fails when that line is
+wrong.
+
+Swallowing the end-of-band run passed too — including against a *purely uniform* image,
+which was the obvious thing to reach for because it produces the longest runs (1024
+blocks in two bytes of entropy data). It cannot bite there: skipping the run and
+decoding each block only to find it empty both leave the AC coefficients at zero, so
+the poison and the correct code produce the same picture. The run has to be followed by
+CONTENT before swallowing it desynchronises anything. `progeob` is a uniform field with
+detail underneath it for that reason, and the poison fails there.
+
+The off-by-one is the same arithmetic and bites everywhere, which is worth noting
+beside the other: two poisons on one expression, one detectable almost anywhere and one
+needing a particular input.

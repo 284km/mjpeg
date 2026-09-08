@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The test JPEGs: seven of flat 16x16 blocks, and two with detail in them.
+"""The test JPEGs: seven of flat 16x16 blocks, two with detail, and five progressive.
 
 Flat because a block of one colour has only a DC coefficient, and a flat block comes out identical in
 every correct decoder — so these can be compared with no tolerance while a general image cannot. See
@@ -50,7 +50,9 @@ Needs Pillow. Run once; the files are committed.
 
   python3 scripts/gen_jpeg_images.py test/data/jpeg
 """
-import io, os, sys
+import io
+import shutil
+import subprocess, os, sys
 
 COLS = [(255, 0, 0), (0, 128, 0), (0, 0, 255), (255, 255, 255),
         (0, 0, 0), (192, 192, 192), (255, 165, 0), (128, 128, 128)]
@@ -90,7 +92,89 @@ def main(d):
                                   ((x + y) * 3 + (x * y) % 29) % 256))
     det.save(os.path.join(d, "detail.jpg"), quality=90, subsampling=0)
     det.save(os.path.join(d, "detail420.jpg"), quality=90, subsampling=2)
-    print("gen_jpeg_images: 9 written")
+
+    # --- progressive -------------------------------------------------------------
+    #
+    # THESE NEED cjpeg AND PILLOW CANNOT MAKE THEM. Pillow's `progressive=True` always
+    # emits successive approximation, and this decoder reads spectral selection only --
+    # so a corpus built with Pillow would contain nothing this path can decode and
+    # nothing that would catch it being wrong. cjpeg takes a scan script, which is the
+    # only way to ask for the spectral-selection-only form that `CesiumMilkTruck` (the
+    # file this was written for) actually uses.
+    #
+    # The generated files are COMMITTED, so cjpeg is needed to regenerate the corpus and
+    # not to run the gate.
+    #
+    # Each earns its place by punishing one way of being wrong:
+    #
+    #   prog444   the ordinary progressive shape, and the same structure as the model
+    #             that motivated it: an interleaved DC scan, then one AC scan per
+    #             component. It also redefines the chroma Huffman tables between scans,
+    #             which is what caught the real bug -- a second definition of the same
+    #             (class, id) has to SHADOW the first, and appending then taking the
+    #             first match decoded Cr with Cb's table. Blue came out exact and red
+    #             and green were wrong everywhere.
+    #   prog420   chroma halved both ways, so a scan's blocks are not the MCU grid's.
+    #   progodd   37x29 at 4:2:0, where a component's own block count genuinely differs
+    #             from mcux*hs -- a non-interleaved scan is walked in the component's
+    #             OWN raster order, and at 64x48 the two happen to agree, so only this
+    #             file separates the definition from the coincidence.
+    #   proggray  one component: no interleaving and no colour conversion.
+    #   progeob   a large uniform field FOLLOWED BY DETAIL, which is the only shape that
+    #             punishes the end-of-band run. The uniform field compresses 1024 blocks
+    #             into two bytes of entropy data, so the run is long; the detail after it
+    #             is what makes swallowing the run visible. A purely uniform image does
+    #             NOT catch it -- "skip the run" and "decode each block and find it
+    #             empty" both leave the AC coefficients at zero, so the poison and the
+    #             correct code agree. That was measured, not guessed: with a uniform
+    #             fixture the poison passed, and with this one it fails.
+    #
+    # NOT COVERED, and recorded rather than left to be assumed: the POINT TRANSFORM
+    # (`al` > 0) with spectral selection alone. Such a file is legal and this decoder
+    # handles it, but libjpeg BLOCK-SMOOTHS it -- an incompletely-sent DC is exactly its
+    # trigger -- so djpeg and Pillow both return something no plain reconstruction
+    # produces and there is nothing to compare against exactly. The same is true of a
+    # DC-only progressive file. Successive approximation will cover `al` when it lands,
+    # because a fully refined file is not smoothed.
+    prog_scans = os.path.join(d, "progressive.scan")
+    with open(prog_scans, "w") as f:
+        f.write("0,1,2: 0 0 0 0;\n0: 1 63 0 0;\n1: 1 63 0 0;\n2: 1 63 0 0;\n")
+    gray_scans = os.path.join(d, "progressive_gray.scan")
+    with open(gray_scans, "w") as f:
+        f.write("0: 0 0 0 0;\n0: 1 63 0 0;\n")
+
+    odd = Image.new("RGB", (37, 29))
+    for y in range(29):
+        for x in range(37):
+            odd.putpixel((x, y), ((x * 7) % 256, (y * 11) % 256, (x * y) % 256))
+
+    def cj(src_img, out, sample, scans, mode="RGB"):
+        ppm = os.path.join(d, "_tmp_src.ppm" if mode == "RGB" else "_tmp_src.pgm")
+        src_img.convert("RGB" if mode == "RGB" else "L").save(ppm)
+        r = subprocess.run(["cjpeg", "-quality", "90", "-sample", sample,
+                            "-scans", scans, "-outfile", os.path.join(d, out), ppm],
+                           capture_output=True)
+        os.unlink(ppm)
+        if r.returncode != 0:
+            raise SystemExit("gen_jpeg_images: cjpeg failed for %s: %s"
+                             % (out, r.stderr.decode()[:200]))
+
+    if shutil.which("cjpeg") is None:
+        print("gen_jpeg_images: 11 written; SKIPPED the 5 progressive files — no cjpeg")
+        return 0
+    cj(det, "prog444.jpg", "1x1", prog_scans)
+    cj(det, "prog420.jpg", "2x2", prog_scans)
+    cj(odd, "progodd.jpg", "2x2", prog_scans)
+    cj(det, "proggray.jpg", "1x1", gray_scans, mode="L")
+
+    eob = Image.new("RGB", (256, 128), (180, 90, 40))
+    for y in range(96, 128):
+        for x in range(256):
+            eob.putpixel((x, y), ((x * 7) % 256, (y * 13) % 256, ((x ^ y) * 3) % 256))
+    cj(eob, "progeob.jpg", "1x1", prog_scans)
+
+    os.unlink(prog_scans); os.unlink(gray_scans)
+    print("gen_jpeg_images: 16 written")
     return 0
 
 

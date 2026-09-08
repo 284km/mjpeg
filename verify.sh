@@ -39,7 +39,9 @@
 # catches, are recorded in POISONS.md. Sixteen are caught; the two that are not are not
 # holes, and finding that out is why they were tried.
 #
-# WHAT THIS DECODER REFUSES: progressive, lossless, differential and arithmetic-coded
+# WHAT THIS DECODER REFUSES: lossless, differential and arithmetic-coded frames, and
+# progressive files that use SUCCESSIVE APPROXIMATION. Progressive with spectral
+# selection is read, exactly.
 # JPEGs, each by name. It used to STEP PAST a frame marker it did not know, so a
 # progressive file came back as a header reading `0 0 0` having parsed the quantisation
 # tables perfectly on the way, and said nothing.
@@ -104,7 +106,7 @@ PY
     else echo "  FAIL  $f differs from Pillow"; fail=$((fail + 1)); fi
   done
   echo "  ok    $n file(s) byte-identical to Pillow's libjpeg, right now"
-  [ "$n" -ge 9 ] || { echo "  FAIL  only $n compared against Pillow"; fail=$((fail + 1)); }
+  [ "$n" -ge 14 ] || { echo "  FAIL  only $n compared against Pillow"; fail=$((fail + 1)); }
   pass=$((pass + 1))
 else
   echo "  SKIP  Pillow is not installed, so libjpeg was not asked again"
@@ -127,8 +129,13 @@ while i < len(base) - 1:
         i += 2
 # The same file with its frame marker relabelled: still a well-formed segment, still
 # something this decoder must not pretend to read.
-for name, marker in (("progressive.jpg", 0xC2), ("lossless.jpg", 0xC3),
-                     ("arithmetic.jpg", 0xCA)):
+#
+# PROGRESSIVE IS NO LONGER IN THIS LIST, and that is the point of the change that added
+# it to the corpus instead. A baseline file with its marker changed to C2 is not a
+# progressive file -- its scan is baseline-shaped -- so once C2 is genuinely read, that
+# fixture stops testing anything and starts testing whether the decoder notices a lie.
+# The real limit is narrower and is checked below with a file that really has it.
+for name, marker in (("lossless.jpg", 0xC3), ("arithmetic.jpg", 0xCA)):
     d = bytearray(base)
     d[i + 1] = marker
     open(os.path.join(T, name), "wb").write(bytes(d))
@@ -150,7 +157,27 @@ check_refusal() { # file expected-words
        fail=$((fail + 1)) ;;
   esac
 }
-check_refusal progressive.jpg "this file is progressive DCT"
+# WHAT IS ACTUALLY NOT READ YET: successive approximation. Spectral selection -- the
+# form `CesiumMilkTruck` uses, and the one the corpus above covers -- is read exactly;
+# refinement scans are not, and the file that proves the refusal is REAL rather than
+# relabelled comes from Pillow, whose `progressive=True` always emits them.
+python3 - "$T" <<'PY2'
+import sys, os
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit(0)
+im = Image.new("RGB", (32, 32))
+for y in range(32):
+    for x in range(32):
+        im.putpixel((x, y), ((x * 8) % 256, (y * 8) % 256, ((x + y) * 4) % 256))
+im.save(os.path.join(sys.argv[1], "sapprox.jpg"), quality=90, subsampling=0, progressive=True)
+PY2
+if [ -f "$T/sapprox.jpg" ]; then
+  check_refusal sapprox.jpg "successive approximation, which is not read yet"
+else
+  echo "  SKIP  no Pillow, so the successive-approximation refusal was not checked"
+fi
 check_refusal lossless.jpg    "this file is lossless"
 check_refusal arithmetic.jpg  "this file is arithmetic-coded progressive"
 check_refusal noframe.jpg     "no frame header was found"
