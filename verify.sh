@@ -85,29 +85,58 @@ else
   fail=$((fail + 1))
 fi
 
-# --- against Pillow, through the CLI ----------------------------------------------
+# --- against Pillow, through the CLI, on BOTH backends -----------------------------
 # The committed expectations above come from scripts/gen_jpeg_pixels_expected.py, which
 # is Pillow -- so they are libjpeg's answer recorded once. This runs Pillow AGAIN, now,
 # through the PPM the CLI writes: it catches an expectation file that has drifted from the
 # library, which the diff above cannot, because both sides of it are this repository.
+#
+# AND IT ASKS THE COMPILED DECODER THE SAME QUESTION, because everything above this line
+# is the INTERPRETER and every consumer compiles. m3d links this package through the C
+# backend, and a gate that only ever runs one backend cannot tell the two apart -- an
+# integer width, a shift, something folded at emit time. The compiled column SKIPS BY
+# NAME without a C compiler rather than quietly halving the claim.
+CBIN=""
+if command -v "${CC:-clang}" >/dev/null 2>&1; then
+  if "$MERE" -c mjpeg.mere > "$T/mjpeg.c" 2>"$T/emit.err" \
+     && "${CC:-clang}" -O2 -w "$T/mjpeg.c" -o "$T/mjpeg" -lm 2>>"$T/emit.err"; then
+    CBIN="$T/mjpeg"
+  else
+    echo "  FAIL  mjpeg.mere did not emit and build as C"
+    head -3 "$T/emit.err" | sed 's/^/        /'
+    fail=$((fail + 1))
+  fi
+else
+  echo "  SKIP  no C compiler, so only the interpreter was asked"
+fi
 if python3 -c 'import PIL' 2>/dev/null; then
-  n=0
+  n=0; nc=0
   for f in test/data/*.jpg; do
     "$MERE" mjpeg.mere ppm "$f" "$T/got.ppm" >/dev/null 2>&1 || {
       echo "  FAIL  $f did not decode"; fail=$((fail + 1)); continue; }
-    if python3 - "$f" "$T/got.ppm" <<'PY'
+    if python3 - "$f" "$T/got.ppm" <<'PILLOW'
 import sys
 from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 want = f"P6\n{im.size[0]} {im.size[1]}\n255\n".encode() + im.tobytes()
 sys.exit(0 if open(sys.argv[2], "rb").read() == want else 1)
-PY
+PILLOW
     then n=$((n + 1))
     else echo "  FAIL  $f differs from Pillow"; fail=$((fail + 1)); fi
+    [ -n "$CBIN" ] || continue
+    "$CBIN" ppm "$f" "$T/gotc.ppm" >/dev/null 2>&1 || {
+      echo "  FAIL  $f did not decode through the C backend"; fail=$((fail + 1)); continue; }
+    if cmp -s "$T/got.ppm" "$T/gotc.ppm"; then nc=$((nc + 1))
+    else echo "  FAIL  $f decodes differently compiled than interpreted"; fail=$((fail + 1)); fi
   done
   echo "  ok    $n file(s) byte-identical to Pillow's libjpeg, right now"
   [ "$n" -ge 20 ] || { echo "  FAIL  only $n compared against Pillow"; fail=$((fail + 1)); }
   pass=$((pass + 1))
+  if [ -n "$CBIN" ]; then
+    echo "  ok    $nc file(s) identical compiled and interpreted"
+    [ "$nc" -ge 20 ] || { echo "  FAIL  only $nc compared across the two backends"; fail=$((fail + 1)); }
+    pass=$((pass + 1))
+  fi
 else
   echo "  SKIP  Pillow is not installed, so libjpeg was not asked again"
 fi

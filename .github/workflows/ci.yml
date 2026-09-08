@@ -1,0 +1,60 @@
+name: CI
+
+# WHY THIS EXISTS. The compiler moves daily and this repository does not, so the
+# interesting failure is the one where nothing here changed and it broke anyway.
+# mere's own CI checks that its main still TYPES the downstream repositories;
+# "does it still type" and "do its gates still pass" are different questions, and
+# only this can see the second one.
+#
+# WHAT IT COSTS, said plainly: building the compiler from source dominates the run --
+# `verify.sh` itself is about two minutes. And ONE ARM OF THE GATE IS DELIBERATELY
+# ENVIRONMENT-SENSITIVE: after diffing the committed expectations, verify.sh asks
+# Pillow AGAIN, now, so it compares against whatever libjpeg the runner's Pillow was
+# built with. If that ever disagrees with the committed answers, this goes red for a
+# reason that is not a change in this repository -- and that is the arm's whole
+# purpose, because the alternative is a corpus that has silently drifted from the
+# library it claims to match. A red there names the file it differs on.
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 4 * * 1"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the compiler
+        uses: actions/checkout@v4
+        with:
+          repository: merelang/mere
+          path: mere
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5"
+
+      - name: Build mere
+        working-directory: mere
+        run: opam install . --deps-only --yes && opam exec -- dune build
+
+      # Pillow is libjpeg, reached from Python. Without it verify.sh SKIPS the two
+      # columns that ask an implementation other than this one -- and a skip is a real
+      # weakening, so it is installed rather than tolerated.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Pillow
+        run: python3 -m pip install --upgrade pillow
+
+      # cjpeg is NOT needed: it writes the progressive fixtures and those are committed.
+      # `scripts/gen_jpeg_images.py` is a maintenance command, not a gate.
+
+      - name: Verify
+        env:
+          MERE: ${{ github.workspace }}/mere/_build/default/bin/mere.exe
+        run: sh verify.sh

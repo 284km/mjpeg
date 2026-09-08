@@ -144,6 +144,15 @@ had drifted from the library would still match itself. One more file is written 
 Pillow at run time, so a decoder that had quietly specialised to `cjpeg`'s scan script
 fails there and nowhere else.
 
+**And every file is decoded twice, once interpreted and once compiled**, because
+everything else here runs the interpreter and every consumer compiles:
+[m3d](https://github.com/284km/m3d) links this package through the C backend. A gate
+that only ever runs one backend cannot tell the two apart. The compiled column skips by
+name when there is no C compiler rather than quietly halving the claim.
+
+`.github/workflows/ci.yml` runs all of it on every push and once a week — the weekly run
+is the point, because the compiler moves and this repository does not.
+
 ## What it refuses, by name
 
 Lossless, differential and arithmetic-coded JPEGs, a document with no frame header at
