@@ -1,7 +1,7 @@
 # mjpeg
 
 A JPEG decoder in [Mere](https://merelang.org/), as a package: baseline, extended
-sequential, and progressive with spectral selection.
+sequential, and progressive — both spectral selection and successive approximation.
 
 ```sh
 mjpeg info <file.jpg>            # what the header says
@@ -33,14 +33,15 @@ transformed. That is the entire difference. The Huffman reader, the dequantisati
 inverse transform, the upsampling and the colour conversion are the baseline ones,
 unchanged — which is also why this is exact for the same reason baseline is.
 
-**Spectral selection is read; successive approximation is refused by name.** The two
-halves of progressive are separable, and the split is not arbitrary: of the two models
-that motivated this, `CesiumMilkTruck` uses spectral selection alone — all four of its
-scans have `Ah = Al = 0` — and `CesiumMan` has refinement scans. Half the feature opens
-half the files, and the refusal says which half is missing rather than producing a
-picture nobody should trust.
+**Both halves are read, and they landed separately.** The two halves of progressive
+are separable, and the split was not arbitrary: of the two models that motivated this,
+`CesiumMilkTruck` uses spectral selection alone — all four of its scans have
+`Ah = Al = 0` — and `CesiumMan` has refinement scans. Spectral selection landed first
+and the refusal named which half was missing rather than producing a picture nobody
+should trust; successive approximation landed second.
 
-`CesiumMilkTruck` at 2048×2048 decodes **0 of 12,582,912 bytes different** from libjpeg.
+`CesiumMilkTruck` at 2048×2048 decodes **0 of 12,582,912 bytes different** from libjpeg,
+and `CesiumMan` at 1024×1024 **0 of 3,145,728**.
 
 ### The bug, and what found it
 
@@ -63,8 +64,11 @@ Getting there needed three corrections to the harness first, and they are worth 
 - **`cjpeg` silently ignored an illegal scan script.** A single scan covering `0..63` is
   not legal in progressive, so it emitted a *baseline* file — which decoded exactly and
   told me the progressive path worked, while testing the baseline path.
-- Pillow's `progressive=True` always emits successive approximation, so it cannot
-  generate anything this reads. The corpus needs `cjpeg` and a scan script.
+- Pillow's `progressive=True` always emits successive approximation, so while only
+  spectral selection was read it could not generate anything this read at all. The
+  spectral-selection corpus needs `cjpeg` and a scan script; the refinement corpus does
+  not, because cjpeg's *default* progressive script is the ten-scan shape libjpeg has
+  emitted for thirty years and is exactly the shape `CesiumMan` arrives in.
 
 ### The corpus, and what each file punishes
 
@@ -84,9 +88,38 @@ the correct code agree. It takes content *after* the run to desynchronise, which
 `progeob` is shaped the way it is.
 
 **Not covered, and recorded rather than assumed**: the point transform (`Al > 0`) with
-spectral selection alone. Such a file is legal and this decoder handles it, but it is
-exactly the case libjpeg smooths, so there is nothing to compare against exactly.
-Successive approximation will cover it, because a fully refined file is not smoothed.
+spectral selection *alone*. Such a file is legal and this decoder handles it, but it is
+exactly the case libjpeg smooths, so there is nothing to compare against exactly. The
+`sa*` files below do cover `Al`, because a fully refined file is not smoothed: each of
+them sends its DC at `Al = 1` and refines it to zero.
+
+### Successive approximation, and the two poisons that could not bite
+
+A refinement scan adds a lower bit to a coefficient an earlier scan already sent, and it
+carries two interleaved kinds of bit: a **correction bit** for every coefficient already
+known to be nonzero, and a Huffman-coded pair announcing a coefficient that *becomes*
+nonzero here. The run in that pair counts **zero-history coefficients only**, so walking
+it means stepping over the nonzero ones without spending run while spending a correction
+bit on each. Getting that split wrong desynchronises the bit stream, and everything after
+it is noise rather than a slightly wrong picture.
+
+| | |
+|---|---|
+| `sa444` | the ordinary shape: cjpeg's default ten-scan progressive script |
+| `sa420` | chroma halved both ways, so the DC refinement runs inside an MCU of six blocks |
+| `saodd` | 37×29 at 4:2:0 again, where the component's own block count differs from the grid |
+| `sagray` | one component |
+| `saeob` | uniform field then detail — in a refinement scan an end-of-band run does **not** skip the block, because every already-nonzero coefficient still owes its correction bit |
+| `saq20` | quality 20, where the quantiser leaves runs long enough to make the sixteen-zeroes escape appear at all |
+
+Nine poisons, seven caught (see [POISONS.md](POISONS.md)). **The two that were not are
+branches that cannot change an answer**, and rather than argue that from the format each
+was replaced by a `fail` and every fixture plus `CesiumMan` was decoded again: neither
+fired. OR-ing the DC refinement bit in and adding it agree, because the bit it lands on is
+always clear; the guard against correcting a coefficient twice cannot fire, because within
+a scan each position is visited once and across scans each refinement targets a lower bit.
+Both are kept — the first is what libjpeg writes, the second is what libjpeg keeps for a
+corrupt stream.
 
 ## Exact against libjpeg, which is narrower than "right"
 
@@ -105,18 +138,25 @@ nearest sample, which is the obvious implementation, is what leaves visible bloc
 every chroma edge.
 
 `verify.sh` compares 297 lines of run-length rows over nine files with no tolerance,
-**and then asks Pillow again, now**, through the PPM the CLI writes — because both sides
-of the committed expectations are this repository, and a file that had drifted from the
-library would still match itself.
+**and then asks Pillow again, now**, through the PPM the CLI writes, for all twenty —
+because both sides of the committed expectations are this repository, and a file that
+had drifted from the library would still match itself. One more file is written by
+Pillow at run time, so a decoder that had quietly specialised to `cjpeg`'s scan script
+fails there and nowhere else.
 
 ## What it refuses, by name
 
-Progressive, lossless, differential and arithmetic-coded JPEGs, and a document with no
-frame header at all. It used to **step past** a frame marker it did not recognise, so a
-progressive file came back as a header reading `0 0 0` — width zero, height zero, no
-components — having parsed the quantisation tables perfectly on the way, and said
-nothing. Two of the models in [m3d](https://github.com/284km/m3d)'s corpus are
-progressive, which is how that was found.
+Lossless, differential and arithmetic-coded JPEGs, a document with no frame header at
+all, and **a progressive file with restart intervals** — that one needs the bit reader,
+the DC predictors and the end-of-band run reset at every marker, and no file this has
+been pointed at has one. It is refused where the header is read, not where the pixels
+are, so `info` cannot print a header this decoder cannot stand behind.
+
+It used to **step past** a frame marker it did not recognise, so a progressive file came
+back as a header reading `0 0 0` — width zero, height zero, no components — having
+parsed the quantisation tables perfectly on the way, and said nothing. Two of the models
+in [m3d](https://github.com/284km/m3d)'s corpus are progressive, which is how that was
+found; both of them read now.
 
 Progressive JPEG is the obvious thing still missing.
 

@@ -134,8 +134,9 @@ def main(d):
     # handles it, but libjpeg BLOCK-SMOOTHS it -- an incompletely-sent DC is exactly its
     # trigger -- so djpeg and Pillow both return something no plain reconstruction
     # produces and there is nothing to compare against exactly. The same is true of a
-    # DC-only progressive file. Successive approximation will cover `al` when it lands,
-    # because a fully refined file is not smoothed.
+    # DC-only progressive file. The `sa*` files below DO cover `al`, because a fully
+    # refined file is not smoothed: every one of them sends its DC at al=1 and refines
+    # it to al=0.
     prog_scans = os.path.join(d, "progressive.scan")
     with open(prog_scans, "w") as f:
         f.write("0,1,2: 0 0 0 0;\n0: 1 63 0 0;\n1: 1 63 0 0;\n2: 1 63 0 0;\n")
@@ -173,8 +174,57 @@ def main(d):
             eob.putpixel((x, y), ((x * 7) % 256, (y * 13) % 256, ((x ^ y) * 3) % 256))
     cj(eob, "progeob.jpg", "1x1", prog_scans)
 
+    # --- successive approximation ------------------------------------------------
+    #
+    # The other half of progressive: a scan that adds a LOWER BIT to a coefficient an
+    # earlier scan already sent. No scan script is needed and none is given -- cjpeg's
+    # own default progressive script is exactly the ten-scan shape libjpeg has emitted
+    # for thirty years, and it is the shape `CesiumMan` (the model this was written for)
+    # arrives in: an interleaved DC at al=1, AC bands at al=2 and al=1, then refinement
+    # scans down to al=0.
+    #
+    # WHY THESE ARE EXACTLY COMPARABLE WHERE A HALF-SENT FILE IS NOT: libjpeg block-
+    # smooths a progressive image whose coefficients are still incomplete, and that is
+    # what makes a DC-only or spectral-selection-only file impossible to compare
+    # exactly. A file with every refinement scan present is complete, so no smoothing
+    # applies and the answer is the plain reconstruction again.
+    #
+    #   sa444     the ordinary shape, three components, no subsampling
+    #   sa420     chroma halved both ways, so the DC refinement runs inside an MCU of
+    #             four luma blocks and two chroma ones rather than one block each
+    #   saodd     37x29 at 4:2:0 again, where a component's own block count differs from
+    #             the MCU grid -- the refinement scans are non-interleaved and walked in
+    #             the component's own raster order
+    #   sagray    one component
+    #   saeob     the uniform-then-detail field again, and it punishes a DIFFERENT thing
+    #             here than it does in `progeob`: inside an end-of-band run a refinement
+    #             scan does NOT skip the block, because every coefficient an earlier scan
+    #             made nonzero still owes a correction bit. Skipping them desynchronises
+    #             the bit reader, and everything after is noise.
+    #   saq20     the detail pattern at quality 20, where the quantiser leaves long runs
+    #             of zeroes between nonzero coefficients -- which is what makes a
+    #             refinement scan emit the sixteen-zeroes escape (ZRL) at all. At quality
+    #             90 it barely appears.
+    def cjp(src_img, out, sample, mode="RGB", quality="90"):
+        ppm = os.path.join(d, "_tmp_src.ppm" if mode == "RGB" else "_tmp_src.pgm")
+        src_img.convert("RGB" if mode == "RGB" else "L").save(ppm)
+        r = subprocess.run(["cjpeg", "-quality", quality, "-sample", sample,
+                            "-progressive", "-outfile", os.path.join(d, out), ppm],
+                           capture_output=True)
+        os.unlink(ppm)
+        if r.returncode != 0:
+            raise SystemExit("gen_jpeg_images: cjpeg failed for %s: %s"
+                             % (out, r.stderr.decode()[:200]))
+
+    cjp(det, "sa444.jpg", "1x1")
+    cjp(det, "sa420.jpg", "2x2")
+    cjp(odd, "saodd.jpg", "2x2")
+    cjp(det, "sagray.jpg", "1x1", mode="L")
+    cjp(eob, "saeob.jpg", "1x1")
+    cjp(det, "saq20.jpg", "1x1", quality="20")
+
     os.unlink(prog_scans); os.unlink(gray_scans)
-    print("gen_jpeg_images: 16 written")
+    print("gen_jpeg_images: 22 written")
     return 0
 
 

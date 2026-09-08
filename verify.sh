@@ -40,8 +40,8 @@
 # holes, and finding that out is why they were tried.
 #
 # WHAT THIS DECODER REFUSES: lossless, differential and arithmetic-coded frames, and
-# progressive files that use SUCCESSIVE APPROXIMATION. Progressive with spectral
-# selection is read, exactly.
+# progressive files with RESTART INTERVALS. Progressive is otherwise read whole -- both
+# spectral selection and successive approximation -- exactly.
 # JPEGs, each by name. It used to STEP PAST a frame marker it did not know, so a
 # progressive file came back as a header reading `0 0 0` having parsed the quantisation
 # tables perfectly on the way, and said nothing.
@@ -106,7 +106,7 @@ PY
     else echo "  FAIL  $f differs from Pillow"; fail=$((fail + 1)); fi
   done
   echo "  ok    $n file(s) byte-identical to Pillow's libjpeg, right now"
-  [ "$n" -ge 14 ] || { echo "  FAIL  only $n compared against Pillow"; fail=$((fail + 1)); }
+  [ "$n" -ge 20 ] || { echo "  FAIL  only $n compared against Pillow"; fail=$((fail + 1)); }
   pass=$((pass + 1))
 else
   echo "  SKIP  Pillow is not installed, so libjpeg was not asked again"
@@ -157,10 +157,16 @@ check_refusal() { # file expected-words
        fail=$((fail + 1)) ;;
   esac
 }
-# WHAT IS ACTUALLY NOT READ YET: successive approximation. Spectral selection -- the
-# form `CesiumMilkTruck` uses, and the one the corpus above covers -- is read exactly;
-# refinement scans are not, and the file that proves the refusal is REAL rather than
-# relabelled comes from Pillow, whose `progressive=True` always emits them.
+# SUCCESSIVE APPROXIMATION IS NOW READ, and this is where that is checked against an
+# encoder the committed corpus does not use. Every `sa*.jpg` above came from cjpeg;
+# Pillow's `progressive=True` writes its own ten-scan script, so a decoder that had
+# quietly specialised to cjpeg's output fails here and nowhere else.
+#
+# AND ITS NEIGHBOUR IS STILL REFUSED: a progressive file WITH RESTART INTERVALS needs
+# the bit reader, the DC predictors and the end-of-band run reset at every marker, and
+# no file this has been pointed at has one. Pillow can write that combination, so the
+# refusal is checked against a file that really has it rather than against a relabelled
+# one -- the mistake the lossless and arithmetic fixtures above were rebuilt to avoid.
 python3 - "$T" <<'PY2'
 import sys, os
 try:
@@ -172,11 +178,28 @@ for y in range(32):
     for x in range(32):
         im.putpixel((x, y), ((x * 8) % 256, (y * 8) % 256, ((x + y) * 4) % 256))
 im.save(os.path.join(sys.argv[1], "sapprox.jpg"), quality=90, subsampling=0, progressive=True)
+im.save(os.path.join(sys.argv[1], "progdri.jpg"), quality=90, subsampling=0,
+        progressive=True, restart_marker_blocks=2)
 PY2
 if [ -f "$T/sapprox.jpg" ]; then
-  check_refusal sapprox.jpg "successive approximation, which is not read yet"
+  "$MERE" mjpeg.mere ppm "$T/sapprox.jpg" "$T/sapprox.ppm" >/dev/null 2>&1 \
+    && python3 - "$T/sapprox.jpg" "$T/sapprox.ppm" <<'PY3'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+want = f"P6\n{im.size[0]} {im.size[1]}\n255\n".encode() + im.tobytes()
+sys.exit(0 if open(sys.argv[2], "rb").read() == want else 1)
+PY3
+  if [ $? -eq 0 ]; then
+    echo "  ok    a Pillow-written progressive file (its own scan script) is exact"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL  the Pillow-written progressive file did not decode exactly"
+    fail=$((fail + 1))
+  fi
+  check_refusal progdri.jpg "progressive AND has restart intervals"
 else
-  echo "  SKIP  no Pillow, so the successive-approximation refusal was not checked"
+  echo "  SKIP  no Pillow, so the second progressive encoder was not asked"
 fi
 check_refusal lossless.jpg    "this file is lossless"
 check_refusal arithmetic.jpg  "this file is arithmetic-coded progressive"

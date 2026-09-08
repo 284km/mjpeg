@@ -89,3 +89,48 @@ detail underneath it for that reason, and the poison fails there.
 The off-by-one is the same arithmetic and bites everywhere, which is worth noting
 beside the other: two poisons on one expression, one detectable almost anywhere and one
 needing a particular input.
+
+## Successive approximation (2026-09-08)
+
+Nine, each reverted, over the six new `sa*.jpg` fixtures and the five spectral-selection
+ones as a control. The `n` column counts fixtures that stop matching libjpeg:
+
+| poison | n | which |
+|---|---|---|
+| the DC refinement bit ignored | 6 | every `sa*` |
+| a correction bit read for a still-zero coefficient too | 6 | every `sa*` |
+| the run spent on already-nonzero coefficients as well as zero ones | 6 | every `sa*` |
+| the end-of-band count written with the first pass's `- 1` | 6 | every `sa*` |
+| the sign of a newly nonzero coefficient inverted | 6 | every `sa*` |
+| the sixteen-zeroes escape treated as an end-of-band | 4 | `sa444 saodd saeob saq20` |
+| the end-of-band run skips the block, as it does in the first pass | 2 | `saeob saq20` |
+| the DC refinement bit added instead of OR-ed in | **0** | — cannot change an answer |
+| a correction bit applied to a coefficient that already has that bit | **0** | — cannot fire |
+
+**No spectral-selection fixture failed under any of them,** which is the control working:
+these nine are all in code a file without refinement scans never reaches.
+
+**The two zeroes are not holes, and the probe that says so is separate from the poison.**
+Both are branches whose condition never becomes true on a well-formed stream, so a poison
+cannot distinguish them from the correct code — a poison measures *what changes an
+answer*, and neither of these changes one. Rather than argue that from the format, each
+branch was replaced by a `fail` and every fixture plus `CesiumMan`'s 1024×1024 texture was
+decoded again: **all seven decoded cleanly and neither branch fired**.
+
+* *OR versus add, in the DC refinement.* A refinement scan sends the next lower bit of a
+  value an earlier scan sent shifted up, so the bit it lands on is always clear, and
+  `x | (1 << al)` and `x + (1 << al)` agree — for negative `x` in two's complement as
+  well. `bit_or` is kept because it is what libjpeg writes and what the format describes;
+  the addition would be indistinguishable rather than wrong.
+* *The already-set guard, in the AC refinement.* Within one scan the walk visits each
+  coefficient position at most once, and across scans each refinement targets a lower bit
+  than the last, so the bit being tested is always clear. libjpeg carries the same guard.
+  It is kept for a corrupt stream, where its absence would double a coefficient's
+  correction, and not because any file here needs it — the same standing as the
+  empty-length sentinel in `maxcode`.
+
+**The fixture that had to be built for one of these** is `saeob`, and it is the same
+shape as `progeob` for a different reason. In a refinement scan an end-of-band run does
+NOT mean the block is finished: every coefficient an earlier scan made nonzero still owes
+a correction bit, and skipping them desynchronises the bit reader. That poison is caught
+by exactly the two fixtures with long runs *and* nonzero history under them.
